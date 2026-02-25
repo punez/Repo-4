@@ -1,4 +1,4 @@
-name: Filter Subs
+name: Worker
 
 on:
   schedule:
@@ -18,13 +18,13 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: Install dependencies
+      - name: Install Requirements
         run: pip install -r requirements.txt
 
-      - name: Run filter
-        run: python filter.py
+      - name: Run Worker
+        run: python worker.py
 
-      - name: Commit healthy list
+      - name: Commit healthy.txt
         run: |
           git config --global user.name "bot"
           git config --global user.email "bot@github.com"
