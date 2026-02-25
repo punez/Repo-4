@@ -2,6 +2,7 @@ import asyncio
 import aiohttp
 import base64
 import time
+from urllib.parse import urlparse
 
 TIMEOUT = 3
 CONCURRENCY = 100
@@ -32,9 +33,17 @@ def extract_links(text):
             results.append(line)
     return results
 
+def parse_host_port(link):
+    try:
+        parsed = urlparse(link)
+        host = parsed.hostname
+        port = parsed.port
+        return host, port
+    except:
+        return None, None
+
 async def tcp_check(host, port):
     try:
-        start = time.time()
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(host, int(port)),
             timeout=TIMEOUT
@@ -44,16 +53,6 @@ async def tcp_check(host, port):
         return True
     except:
         return False
-
-def parse_host_port(link):
-    try:
-        after_scheme = link.split("://",1)[1]
-        host_part = after_scheme.split("@")[-1]
-        host = host_part.split(":")[0]
-        port = host_part.split(":")[1].split("?")[0]
-        return host, port
-    except:
-        return None, None
 
 async def main():
     sources = open("inputs.txt").read().splitlines()
