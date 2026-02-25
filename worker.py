@@ -1,7 +1,7 @@
 import asyncio
 import aiohttp
 import base64
-import time
+import json
 from urllib.parse import urlparse
 
 TIMEOUT = 3
@@ -15,14 +15,20 @@ async def fetch(session, url):
     except:
         return ""
 
-def try_base64_decode(text):
+def safe_b64_decode(data):
     try:
-        decoded = base64.b64decode(text.strip()).decode("utf-8")
-        if "://" in decoded:
-            return decoded
-        return text
+        missing_padding = len(data) % 4
+        if missing_padding:
+            data += '=' * (4 - missing_padding)
+        return base64.b64decode(data).decode("utf-8")
     except:
-        return text
+        return None
+
+def try_base64_decode(text):
+    decoded = safe_b64_decode(text.strip())
+    if decoded and "://" in decoded:
+        return decoded
+    return text
 
 def extract_links(text):
     lines = text.splitlines()
@@ -35,10 +41,25 @@ def extract_links(text):
 
 def parse_host_port(link):
     try:
+        if link.startswith("vmess://"):
+            raw = link.replace("vmess://", "")
+            decoded = safe_b64_decode(raw)
+            if not decoded:
+                return None, None
+            data = json.loads(decoded)
+            return data.get("add"), data.get("port")
+
+        if link.startswith("ss://"):
+            raw = link.replace("ss://", "").split("#")[0]
+            decoded = safe_b64_decode(raw.split("@")[0])
+            if decoded and ":" in decoded:
+                host_port = raw.split("@")[-1]
+                host = host_port.split(":")[0]
+                port = host_port.split(":")[1]
+                return host, port
+
         parsed = urlparse(link)
-        host = parsed.hostname
-        port = parsed.port
-        return host, port
+        return parsed.hostname, parsed.port
     except:
         return None, None
 
