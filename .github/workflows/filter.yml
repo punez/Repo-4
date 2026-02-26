@@ -1,33 +1,39 @@
-name: Worker
+name: Filter and Process Nodes
 
 on:
   schedule:
-    - cron: "0 */6 * * *"
-  workflow_dispatch:
+    - cron: '30 6 * * *'          # هر روز ساعت 06:30 UTC (تقریباً 10 صبح به وقت ایران)
+  workflow_dispatch:              # امکان اجرای دستی از GitHub
 
 jobs:
-  build:
+  filter:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: '3.11'      # یا 3.12 اگر ترجیح می‌دی
 
-      - name: Install Requirements
-        run: pip install -r requirements.txt
-
-      - name: Run Worker
-        run: python worker.py
-
-      - name: Commit healthy.txt
+      - name: Install dependencies
         run: |
-          git config --global user.name "bot"
-          git config --global user.email "bot@github.com"
-          git add healthy.txt
-          git commit -m "update healthy list" || echo "No changes"
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Run filter script
+        run: python filter.py
+
+      - name: Commit and push changes if any
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          git add final_sub.txt
+          
+          # فقط اگر تغییری وجود داشته باشه commit می‌کنه
+          git diff --staged --quiet || git commit -m "Auto update: filtered nodes $(date +'%Y-%m-%d %H:%M UTC')"
+          
           git push
