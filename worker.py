@@ -1,110 +1,123 @@
-import asyncio
-import aiohttp
+import requests
 import base64
 import json
-from urllib.parse import urlparse
+import urllib.parse
+import random
+from datetime import datetime
 
-TIMEOUT = 3
-CONCURRENCY = 100
-MAX_PER_SOURCE = 20000
+# ==================== تنظیمات ====================
+SUB_SOURCES_URL = "https://raw.githubusercontent.com/punez/Repo-4/refs/heads/main/inputs.txt"  # ← در هر ریپو این خط را تغییر بده
+OUTPUT_FILE = "healthy.txt"          # نام فایل خروجی (همون قبلی)
+MAX_OUTPUT = 15000                     # سقف نرم — اگر بیشتر شد هم نگه می‌دارد
 
-async def fetch(session, url):
+# =================================================
+
+def log(msg):
+    ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    print(f"[{ts}] {msg}")
+
+def fetch_sources():
     try:
-        async with session.get(url, timeout=20) as resp:
-            return await resp.text()
-    except:
-        return ""
+        r = requests.get(SUB_SOURCES_URL, timeout=15)
+        r.raise_for_status()
+        urls = [line.strip() for line in r.text.splitlines() if line.strip() and not line.startswith("#")]
+        log(f"Found {len(urls)} subscription URLs")
+        return urls
+    except Exception as e:
+        log(f"Error fetching sources.txt: {e}")
+        return []
 
-def safe_b64_decode(data):
+def fetch_and_decode(url):
     try:
-        missing_padding = len(data) % 4
-        if missing_padding:
-            data += '=' * (4 - missing_padding)
-        return base64.b64decode(data).decode("utf-8")
-    except:
+        r = requests.get(url.strip(), timeout=20)
+        r.raise_for_status()
+        content = r.text.strip()
+
+        # اگر base64 باشد decode کن
+        try:
+            decoded = base64.b64decode(content + "===").decode("utf-8", errors="ignore")
+            if "\n" in decoded or "://" in decoded:
+                return decoded.splitlines()
+        except:
+            pass
+        return content.splitlines()
+    except Exception as e:
+        log(f"Failed to fetch {url}: {e}")
+        return []
+
+def get_fingerprint(line):
+    """کلید dedup بدون در نظر گرفتن SNI (اگر فقط SNI متفاوت باشد → duplicate حساب می‌شود)"""
+    line = line.strip()
+    if not line:
         return None
 
-def try_base64_decode(text):
-    decoded = safe_b64_decode(text.strip())
-    if decoded and "://" in decoded:
-        return decoded
-    return text
-
-def extract_links(text):
-    lines = text.splitlines()
-    results = []
-    for line in lines:
-        line = line.strip()
-        if "://" in line:
-            results.append(line)
-    return results
-
-def parse_host_port(link):
     try:
-        if link.startswith("vmess://"):
-            raw = link.replace("vmess://", "")
-            decoded = safe_b64_decode(raw)
-            if not decoded:
-                return None, None
-            data = json.loads(decoded)
-            return data.get("add"), data.get("port")
+        if line.startswith("vmess://"):
+            b64 = line[8:].split("#")[0]
+            data = json.loads(base64.b64decode(b64 + "===").decode("utf-8", errors="ignore"))
+            return "|".join(str(x).lower() for x in [
+                data.get("add", ""), 
+                data.get("port", ""),
+                data.get("id", ""),
+                data.get("fp", ""),
+                data.get("path", ""),
+                data.get("net", ""),
+                data.get("security", ""),
+                data.get("type", "")
+                # sni / host عمداً اینجا نیست → اگر فقط sni متفاوت باشد duplicate حساب می‌شود
+            ])
 
-        if link.startswith("ss://"):
-            raw = link.replace("ss://", "").split("#")[0]
-            decoded = safe_b64_decode(raw.split("@")[0])
-            if decoded and ":" in decoded:
-                host_port = raw.split("@")[-1]
-                host = host_port.split(":")[0]
-                port = host_port.split(":")[1]
-                return host, port
+        elif line.startswith(("vless://", "trojan://")):
+            url = urllib.parse.urlparse(line.split("#")[0])
+            params = urllib.parse.parse_qs(url.query)
+            return "|".join(str(x).lower() for x in [
+                url.hostname or "",
+                url.port or "443",
+                url.username or "",
+                params.get("fp", [""])[0],
+                params.get("path", [""])[0] or params.get("serviceName", [""])[0],
+                params.get("type", [""])[0],
+                params.get("security", [""])[0]
+                # sni / peer عمداً حذف شده → اگر فقط sni متفاوت باشد duplicate حساب می‌شود
+            ])
 
-        parsed = urlparse(link)
-        return parsed.hostname, parsed.port
-    except:
-        return None, None
+        else:  # ss, hy2, tuic و پروتکل‌های ساده‌تر
+            # این‌ها معمولاً SNI ندارند → کل لینک بدون remark
+            return line.split("#")[0].lower()
 
-async def tcp_check(host, port):
-    try:
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(host, int(port)),
-            timeout=TIMEOUT
-        )
-        writer.close()
-        await writer.wait_closed()
-        return True
-    except:
-        return False
+    except Exception as e:
+        # در صورت خطا در parse → fallback به لینک بدون remark
+        return line.split("#")[0].lower()
 
-async def main():
-    sources = open("inputs.txt").read().splitlines()
-    all_links = set()
+# ==================== اجرای اصلی ====================
 
-    async with aiohttp.ClientSession() as session:
-        for url in sources:
-            text = await fetch(session, url)
-            if not text:
-                continue
+log("=== Starting Process Sub (Repo 1-4) ===")
 
-            text = try_base64_decode(text)
-            links = extract_links(text)
+all_lines = []
+for sub_url in fetch_sources():
+    lines = fetch_and_decode(sub_url)
+    all_lines.extend(lines)
 
-            for link in links[:MAX_PER_SOURCE]:
-                all_links.add(link.strip())
+log(f"Total raw lines collected: {len(all_lines)}")
 
-    sem = asyncio.Semaphore(CONCURRENCY)
-    healthy = []
+# dedup: اگر فقط SNI متفاوت باشد → یکی نگه داشته می‌شود
+seen = {}
+for line in all_lines:
+    key = get_fingerprint(line)
+    if key and key not in seen:
+        seen[key] = line
 
-    async def check(link):
-        async with sem:
-            host, port = parse_host_port(link)
-            if host and port:
-                ok = await tcp_check(host, port)
-                if ok:
-                    healthy.append(link)
+unique_nodes = list(seen.values())
 
-    await asyncio.gather(*(check(link) for link in all_links))
+# shuffle برای تنوع بیشتر در خروجی
+random.shuffle(unique_nodes)
 
-    with open("healthy.txt", "w") as f:
-        f.write("\n".join(healthy))
+# محدود به سقف (اگر لازم شد)
+final_list = unique_nodes[:MAX_OUTPUT]
 
-asyncio.run(main())
+with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+    for node in final_list:
+        f.write(node + "\n")
+
+log(f"Done! Final output: {len(final_list)} unique nodes → {OUTPUT_FILE}")
+log("Ready for Repo5 to combine and perform TCP test")
